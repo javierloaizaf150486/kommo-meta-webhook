@@ -11,9 +11,12 @@ const ACCESS_TOKEN = process.env.ACCESS_TOKEN;
 // Mapeo de etapas de Kommo a eventos de Meta
 // Cambia los IDs según tus etapas reales
 const stageToEvent = {
-  '1': 'Lead',           // Nuevo lead
-  '2': 'QualifiedLead', // Calificado
-  '3': 'Purchase',      // Cerrado ganado
+  '70153595': 'Lead',           // Lead entrante
+  '70153607': 'Contact',        // Contacto inicial
+  '70153599': 'Contact',        // Reanudar contacto
+  '70153530': 'ViewContent',    // Precio
+  '70153006': 'Schedule',       // Agenda ⭐
+  '27734908': 'Cancel',         // No agendar
 };
 
 const hashData = (value) => {
