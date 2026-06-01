@@ -75,7 +75,7 @@ app.post('/webhook/kommo', async (req, res) => {
     console.log('Webhook recibido:', JSON.stringify(req.body));
     const body = req.body;
 
-    // ── PASO 1: Indexar contactos del body actual por lead_id ────────
+    // ── PASO 1: Guardar contactos en caché por contact_id Y lead_id ──
     const incomingContacts = body?.contacts?.add || [];
     const contactByLeadId = {};
 
@@ -88,10 +88,13 @@ app.post('/webhook/kommo', async (req, res) => {
         email: contact.email || '',
       };
 
+      // Guardar por contact_id
       contactCache[contact.id] = contactData;
 
+      // Guardar por lead_id para requests separados
       if (contact.linked_leads_id) {
         for (const leadId of Object.keys(contact.linked_leads_id)) {
+          contactCache[`lead_${leadId}`] = contactData;
           contactByLeadId[leadId] = contactData;
         }
       }
@@ -122,8 +125,10 @@ app.post('/webhook/kommo', async (req, res) => {
       const eventName = stageToEvent[statusId];
       if (!eventName) continue;
 
+      // Buscar contacto: mismo request → caché por lead_id → caché por contact_id
       const contactData =
         contactByLeadId[String(lead.id)] ||
+        contactCache[`lead_${lead.id}`]  ||
         contactCache[lead.linked_contacts_id
           ? Object.keys(lead.linked_contacts_id)[0]
           : null] ||
