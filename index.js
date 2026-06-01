@@ -22,6 +22,7 @@ const hashData = (value) => {
 };
 
 const contactCache = {};
+const sentEvents = {}; // Registro de eventos ya enviados
 
 async function sendToMetaCAPI(leadData, eventName) {
   const userData = {};
@@ -42,11 +43,15 @@ async function sendToMetaCAPI(leadData, eventName) {
     return;
   }
 
+  // Generar event_id único por lead + evento
+  const eventId = `${leadData.id}_${eventName}_${Date.now()}`;
+
   const payload = {
     data: [
       {
         event_name: eventName,
         event_time: Math.floor(Date.now() / 1000),
+        event_id: eventId,
         action_source: 'crm',
         user_data: userData,
         custom_data: {
@@ -75,7 +80,7 @@ app.post('/webhook/kommo', async (req, res) => {
     console.log('Webhook recibido:', JSON.stringify(req.body));
     const body = req.body;
 
-    // ── PASO 1: Guardar contactos en caché por contact_id Y lead_id ──
+    // ── PASO 1: Guardar contactos en caché ───────────────────────────
     const incomingContacts = body?.contacts?.add || [];
     const contactByLeadId = {};
 
@@ -88,10 +93,8 @@ app.post('/webhook/kommo', async (req, res) => {
         email: contact.email || '',
       };
 
-      // Guardar por contact_id
       contactCache[contact.id] = contactData;
 
-      // Guardar por lead_id para requests separados
       if (contact.linked_leads_id) {
         for (const leadId of Object.keys(contact.linked_leads_id)) {
           contactCache[`lead_${leadId}`] = contactData;
@@ -125,7 +128,22 @@ app.post('/webhook/kommo', async (req, res) => {
       const eventName = stageToEvent[statusId];
       if (!eventName) continue;
 
-      // Buscar contacto: mismo request → caché por lead_id → caché por contact_id
+      // ── Deduplicación ──────────────────────────────────────────────
+      const dedupeKey = `${lead.id}_${statusId}`;
+      if (sentEvents[dedupeKey]) {
+        console.log(`Duplicado ignorado — lead=${lead.id} evento=${eventName}`);
+        continue;
+      }
+      sentEvents[dedupeKey] = true;
+
+      // Limpiar eventos viejos cada 1000 entradas para no llenar memoria
+      if (Object.keys(sentEvents).length > 1000) {
+        const keys = Object.keys(sentEvents);
+        keys.slice(0, 500).forEach(k => delete sentEvents[k]);
+        console.log('Cache de eventos limpiado');
+      }
+
+      // Buscar contacto
       const contactData =
         contactByLeadId[String(lead.id)] ||
         contactCache[`lead_${lead.id}`]  ||
