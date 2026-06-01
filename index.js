@@ -21,7 +21,6 @@ const hashData = (value) => {
   return crypto.createHash('sha256').update(value.toLowerCase().trim()).digest('hex');
 };
 
-// Cache temporal para guardar datos de contactos mientras llega el lead
 const contactCache = {};
 
 async function sendToMetaCAPI(leadData, eventName) {
@@ -30,14 +29,19 @@ async function sendToMetaCAPI(leadData, eventName) {
   if (leadData.phone) userData.ph = [hashData(leadData.phone)];
   if (leadData.email) userData.em = [hashData(leadData.email)];
 
-  if (leadData.name) {
+  if (leadData.name && leadData.name !== '…') {
     const parts = leadData.name.trim().split(' ');
     userData.fn = [hashData(parts[0])];
     if (parts[1]) userData.ln = [hashData(parts.slice(1).join(' '))];
   }
 
-  // Agregar fbc si viene del anuncio de Meta
   if (leadData.fbc) userData.fbc = leadData.fbc;
+
+  // Si no hay ningún dato de usuario válido, no enviar
+  if (Object.keys(userData).length === 0) {
+    console.log(`Skipping ${eventName} — sin datos de usuario para lead ${leadData.id}`);
+    return;
+  }
 
   const payload = {
     data: [
@@ -72,7 +76,7 @@ app.post('/webhook/kommo', async (req, res) => {
     console.log('Webhook recibido:', JSON.stringify(req.body));
     const body = req.body;
 
-    // ── 1. Guardar contactos en caché cuando llegan ──────────────────
+    // ── PASO 1: Guardar contactos en caché PRIMERO ───────────────────
     const incomingContacts = body?.contacts?.add || [];
     for (const contact of incomingContacts) {
       const phone = contact.custom_fields?.find(f => f.code === 'PHONE')
@@ -82,23 +86,23 @@ app.post('/webhook/kommo', async (req, res) => {
         phone: phone,
         email: contact.email || '',
       };
+      console.log(`Contacto guardado en caché: id=${contact.id} nombre=${contact.name} tel=${phone}`);
     }
 
-    // ── 2. Guardar fbc desde unsorted (cuando llega el lead nuevo) ───
+    // ── PASO 2: Guardar fbc desde unsorted ──────────────────────────
     const unsortedLeads = body?.unsorted?.add || [];
     for (const item of unsortedLeads) {
-      const ref = item?.source_data?.data?.[0] !== undefined
-        ? item?.data?.contacts?.[0]?.profiles?.waba?.profile_data?.ref
-        : null;
+      const ref = item?.data?.contacts?.[0]?.profiles?.waba?.profile_data?.ref;
       if (ref && item.lead_id) {
         if (!contactCache[`lead_${item.lead_id}`]) {
           contactCache[`lead_${item.lead_id}`] = {};
         }
         contactCache[`lead_${item.lead_id}`].fbc = ref;
+        console.log(`fbc guardado para lead ${item.lead_id}`);
       }
     }
 
-    // ── 3. Procesar cambios de estado ────────────────────────────────
+    // ── PASO 3: Procesar leads DESPUÉS de tener el caché ────────────
     const newLeads    = body?.leads?.add    || [];
     const statusLeads = body?.leads?.status || [];
     const allLeads    = [...newLeads, ...statusLeads];
@@ -108,14 +112,23 @@ app.post('/webhook/kommo', async (req, res) => {
       const eventName = stageToEvent[statusId];
       if (!eventName) continue;
 
-      // Buscar el contacto vinculado al lead
+      // Buscar contacto vinculado
       const linkedContactId = lead.linked_contacts_id
         ? Object.keys(lead.linked_contacts_id)[0]
         : null;
 
-      const contactData = linkedContactId
-        ? contactCache[linkedContactId] || {}
-        : {};
+      // Buscar también en el body actual por si viene en el mismo request
+      const contactFromBody = incomingContacts.find(c =>
+        c.linked_leads_id && c.linked_leads_id[lead.id]
+      );
+
+      const contactData = contactFromBody
+        ? {
+            name:  contactFromBody.name || '',
+            phone: contactFromBody.custom_fields?.find(f => f.code === 'PHONE')?.values?.[0]?.value || '',
+            email: contactFromBody.email || '',
+          }
+        : (linkedContactId ? contactCache[linkedContactId] || {} : {});
 
       const fbcData = contactCache[`lead_${lead.id}`] || {};
 
@@ -127,6 +140,7 @@ app.post('/webhook/kommo', async (req, res) => {
         fbc:   fbcData.fbc       || '',
       };
 
+      console.log(`Enviando a Meta — evento=${eventName} lead=${lead.id} tel=${leadData.phone} nombre=${leadData.name}`);
       await sendToMetaCAPI(leadData, eventName);
     }
 
