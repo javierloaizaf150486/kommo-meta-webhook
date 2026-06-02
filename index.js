@@ -27,10 +27,10 @@ const contactCache = {};
 const sentEvents = {};
 
 // Consultar contacto directamente a la API de Kommo
-async function getContactFromKommo(contactId) {
+async function getLeadFromKommo(leadId) {
   try {
     const response = await fetch(
-      `https://${KOMMO_SUBDOMAIN}.amocrm.com/api/v4/contacts/${contactId}`,
+      `https://${KOMMO_SUBDOMAIN}.amocrm.com/api/v4/leads/${leadId}?with=contacts`,
       {
         headers: {
           'Authorization': `Bearer ${KOMMO_TOKEN}`,
@@ -39,21 +39,20 @@ async function getContactFromKommo(contactId) {
       }
     );
     const data = await response.json();
-    const phone = data.custom_fields_values
-      ?.find(f => f.field_code === 'PHONE')
-      ?.values?.[0]?.value || '';
-    const email = data.custom_fields_values
-      ?.find(f => f.field_code === 'EMAIL')
-      ?.values?.[0]?.value || '';
-    console.log(`Contacto obtenido de Kommo API: id=${contactId} nombre=${data.name} tel=${phone}`);
-    return {
-      name:  data.name || '',
-      phone: phone,
-      email: email,
-    };
+    console.log(`Kommo lead raw:`, JSON.stringify(data));
+    
+    // Intentar diferentes rutas donde puede estar el contacto
+    const contactId = 
+      data?._embedded?.contacts?.[0]?.id ||
+      data?.contacts?.[0]?.id ||
+      data?._links?.contacts?.[0]?.id ||
+      null;
+
+    console.log(`Lead obtenido de Kommo API: lead=${leadId} contact=${contactId}`);
+    return contactId;
   } catch (error) {
-    console.error(`Error consultando contacto ${contactId} en Kommo:`, error);
-    return {};
+    console.error(`Error consultando lead ${leadId} en Kommo:`, error);
+    return null;
   }
 }
 
