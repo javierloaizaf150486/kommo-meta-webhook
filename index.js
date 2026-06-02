@@ -6,6 +6,8 @@ app.use(express.urlencoded({ extended: true }));
 
 const PIXEL_ID = process.env.PIXEL_ID;
 const ACCESS_TOKEN = process.env.ACCESS_TOKEN;
+const KOMMO_TOKEN = process.env.KOMMO_TOKEN;
+const KOMMO_SUBDOMAIN = 'loaizafjavier';
 
 const stageToEvent = {
   '70153595': 'Lead',
@@ -22,7 +24,60 @@ const hashData = (value) => {
 };
 
 const contactCache = {};
-const sentEvents = {}; // Registro de eventos ya enviados
+const sentEvents = {};
+
+// Consultar contacto directamente a la API de Kommo
+async function getContactFromKommo(contactId) {
+  try {
+    const response = await fetch(
+      `https://${KOMMO_SUBDOMAIN}.amocrm.com/api/v4/contacts/${contactId}`,
+      {
+        headers: {
+          'Authorization': `Bearer ${KOMMO_TOKEN}`,
+          'Content-Type': 'application/json',
+        }
+      }
+    );
+    const data = await response.json();
+    const phone = data.custom_fields_values
+      ?.find(f => f.field_code === 'PHONE')
+      ?.values?.[0]?.value || '';
+    const email = data.custom_fields_values
+      ?.find(f => f.field_code === 'EMAIL')
+      ?.values?.[0]?.value || '';
+    console.log(`Contacto obtenido de Kommo API: id=${contactId} nombre=${data.name} tel=${phone}`);
+    return {
+      name:  data.name || '',
+      phone: phone,
+      email: email,
+    };
+  } catch (error) {
+    console.error(`Error consultando contacto ${contactId} en Kommo:`, error);
+    return {};
+  }
+}
+
+// Consultar lead para obtener el contact_id vinculado
+async function getLeadFromKommo(leadId) {
+  try {
+    const response = await fetch(
+      `https://${KOMMO_SUBDOMAIN}.amocrm.com/api/v4/leads/${leadId}?with=contacts`,
+      {
+        headers: {
+          'Authorization': `Bearer ${KOMMO_TOKEN}`,
+          'Content-Type': 'application/json',
+        }
+      }
+    );
+    const data = await response.json();
+    const contactId = data?._embedded?.contacts?.[0]?.id;
+    console.log(`Lead obtenido de Kommo API: lead=${leadId} contact=${contactId}`);
+    return contactId;
+  } catch (error) {
+    console.error(`Error consultando lead ${leadId} en Kommo:`, error);
+    return null;
+  }
+}
 
 async function sendToMetaCAPI(leadData, eventName) {
   const userData = {};
@@ -43,7 +98,6 @@ async function sendToMetaCAPI(leadData, eventName) {
     return;
   }
 
-  // Generar event_id único por lead + evento
   const eventId = `${leadData.id}_${eventName}_${Date.now()}`;
 
   const payload = {
@@ -128,7 +182,7 @@ app.post('/webhook/kommo', async (req, res) => {
       const eventName = stageToEvent[statusId];
       if (!eventName) continue;
 
-      // ── Deduplicación ──────────────────────────────────────────────
+      // Deduplicación
       const dedupeKey = `${lead.id}_${statusId}`;
       if (sentEvents[dedupeKey]) {
         console.log(`Duplicado ignorado — lead=${lead.id} evento=${eventName}`);
@@ -136,30 +190,41 @@ app.post('/webhook/kommo', async (req, res) => {
       }
       sentEvents[dedupeKey] = true;
 
-      // Limpiar eventos viejos cada 1000 entradas para no llenar memoria
       if (Object.keys(sentEvents).length > 1000) {
         const keys = Object.keys(sentEvents);
         keys.slice(0, 500).forEach(k => delete sentEvents[k]);
         console.log('Cache de eventos limpiado');
       }
 
-      // Buscar contacto
-      const contactData =
+      // Buscar contacto: caché → API de Kommo
+      let contactData =
         contactByLeadId[String(lead.id)] ||
         contactCache[`lead_${lead.id}`]  ||
         contactCache[lead.linked_contacts_id
           ? Object.keys(lead.linked_contacts_id)[0]
           : null] ||
-        {};
+        null;
+
+      // Si no está en caché, consultar Kommo API
+      if (!contactData || (!contactData.phone && !contactData.email)) {
+        console.log(`Contacto no encontrado en caché para lead ${lead.id}, consultando Kommo API...`);
+        const contactId = await getLeadFromKommo(lead.id);
+        if (contactId) {
+          contactData = await getContactFromKommo(contactId);
+          // Guardar en caché para futuros requests
+          contactCache[`lead_${lead.id}`] = contactData;
+          contactCache[contactId] = contactData;
+        }
+      }
 
       const fbcData = contactCache[`lead_${lead.id}`] || {};
 
       const leadData = {
         id:    lead.id,
-        name:  contactData.name  || '',
-        phone: contactData.phone || '',
-        email: contactData.email || '',
-        fbc:   fbcData.fbc       || '',
+        name:  contactData?.name  || '',
+        phone: contactData?.phone || '',
+        email: contactData?.email || '',
+        fbc:   fbcData.fbc        || '',
       };
 
       console.log(`Enviando a Meta — evento=${eventName} lead=${lead.id} tel=${leadData.phone} nombre=${leadData.name}`);
