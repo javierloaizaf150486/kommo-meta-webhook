@@ -1,5 +1,6 @@
 const express = require('express');
 const crypto = require('crypto');
+const { createClient } = require('redis');
 const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -8,6 +9,11 @@ const PIXEL_ID = process.env.PIXEL_ID;
 const ACCESS_TOKEN = process.env.ACCESS_TOKEN;
 const KOMMO_TOKEN = process.env.KOMMO_TOKEN;
 const KOMMO_SUBDOMAIN = 'loaizafjavier';
+
+// Conectar Redis
+const redis = createClient({ url: process.env.REDIS_URL });
+redis.on('error', (err) => console.error('Redis error:', err));
+redis.connect().then(() => console.log('Redis conectado ✅'));
 
 const stageToEvent = {
   '70153595': 'Lead',
@@ -23,14 +29,27 @@ const hashData = (value) => {
   return crypto.createHash('sha256').update(value.toLowerCase().trim()).digest('hex');
 };
 
-const contactCache = {};
-const sentEvents = {};
+async function saveContact(key, data) {
+  await redis.set(`contact:${key}`, JSON.stringify(data), { EX: 60 * 60 * 24 }); // 24 horas
+}
 
-// Consultar contacto directamente a la API de Kommo
-async function getLeadFromKommo(leadId) {
+async function getContact(key) {
+  const data = await redis.get(`contact:${key}`);
+  return data ? JSON.parse(data) : null;
+}
+
+async function isEventSent(key) {
+  return await redis.exists(`event:${key}`);
+}
+
+async function markEventSent(key) {
+  await redis.set(`event:${key}`, '1', { EX: 60 * 60 * 24 * 7 }); // 7 días
+}
+
+async function getContactFromKommo(contactId) {
   try {
     const response = await fetch(
-      `https://${KOMMO_SUBDOMAIN}.amocrm.com/api/v4/leads/${leadId}?with=contacts`,
+      `https://${KOMMO_SUBDOMAIN}.amocrm.com/api/v4/contacts/${contactId}`,
       {
         headers: {
           'Authorization': `Bearer ${KOMMO_TOKEN}`,
@@ -39,24 +58,20 @@ async function getLeadFromKommo(leadId) {
       }
     );
     const data = await response.json();
-    console.log(`Kommo lead raw:`, JSON.stringify(data));
-    
-    // Intentar diferentes rutas donde puede estar el contacto
-    const contactId = 
-      data?._embedded?.contacts?.[0]?.id ||
-      data?.contacts?.[0]?.id ||
-      data?._links?.contacts?.[0]?.id ||
-      null;
-
-    console.log(`Lead obtenido de Kommo API: lead=${leadId} contact=${contactId}`);
-    return contactId;
+    const phone = data.custom_fields_values
+      ?.find(f => f.field_code === 'PHONE')
+      ?.values?.[0]?.value || '';
+    const email = data.custom_fields_values
+      ?.find(f => f.field_code === 'EMAIL')
+      ?.values?.[0]?.value || '';
+    console.log(`Contacto obtenido de Kommo API: id=${contactId} nombre=${data.name} tel=${phone}`);
+    return { name: data.name || '', phone, email };
   } catch (error) {
-    console.error(`Error consultando lead ${leadId} en Kommo:`, error);
-    return null;
+    console.error(`Error consultando contacto ${contactId} en Kommo:`, error);
+    return {};
   }
 }
 
-// Consultar lead para obtener el contact_id vinculado
 async function getLeadFromKommo(leadId) {
   try {
     const response = await fetch(
@@ -69,7 +84,10 @@ async function getLeadFromKommo(leadId) {
       }
     );
     const data = await response.json();
-    const contactId = data?._embedded?.contacts?.[0]?.id;
+    const contactId =
+      data?._embedded?.contacts?.[0]?.id ||
+      data?.contacts?.[0]?.id ||
+      null;
     console.log(`Lead obtenido de Kommo API: lead=${leadId} contact=${contactId}`);
     return contactId;
   } catch (error) {
@@ -133,7 +151,7 @@ app.post('/webhook/kommo', async (req, res) => {
     console.log('Webhook recibido:', JSON.stringify(req.body));
     const body = req.body;
 
-    // ── PASO 1: Guardar contactos en caché ───────────────────────────
+    // ── PASO 1: Guardar contactos en Redis ───────────────────────────
     const incomingContacts = body?.contacts?.add || [];
     const contactByLeadId = {};
 
@@ -146,16 +164,16 @@ app.post('/webhook/kommo', async (req, res) => {
         email: contact.email || '',
       };
 
-      contactCache[contact.id] = contactData;
+      await saveContact(contact.id, contactData);
 
       if (contact.linked_leads_id) {
         for (const leadId of Object.keys(contact.linked_leads_id)) {
-          contactCache[`lead_${leadId}`] = contactData;
+          await saveContact(`lead_${leadId}`, contactData);
           contactByLeadId[leadId] = contactData;
         }
       }
 
-      console.log(`Contacto guardado: id=${contact.id} nombre=${contact.name} tel=${phone}`);
+      console.log(`Contacto guardado en Redis: id=${contact.id} nombre=${contact.name} tel=${phone}`);
     }
 
     // ── PASO 2: Guardar fbc desde unsorted ──────────────────────────
@@ -163,10 +181,9 @@ app.post('/webhook/kommo', async (req, res) => {
     for (const item of unsortedLeads) {
       const ref = item?.data?.contacts?.[0]?.profiles?.waba?.profile_data?.ref;
       if (ref && item.lead_id) {
-        if (!contactCache[`lead_${item.lead_id}`]) {
-          contactCache[`lead_${item.lead_id}`] = {};
-        }
-        contactCache[`lead_${item.lead_id}`].fbc = ref;
+        const existing = await getContact(`lead_${item.lead_id}`) || {};
+        existing.fbc = ref;
+        await saveContact(`lead_${item.lead_id}`, existing);
         console.log(`fbc guardado para lead ${item.lead_id}`);
       }
     }
@@ -181,42 +198,31 @@ app.post('/webhook/kommo', async (req, res) => {
       const eventName = stageToEvent[statusId];
       if (!eventName) continue;
 
-      // Deduplicación
+      // Deduplicación con Redis
       const dedupeKey = `${lead.id}_${statusId}`;
-      if (sentEvents[dedupeKey]) {
+      if (await isEventSent(dedupeKey)) {
         console.log(`Duplicado ignorado — lead=${lead.id} evento=${eventName}`);
         continue;
       }
-      sentEvents[dedupeKey] = true;
+      await markEventSent(dedupeKey);
 
-      if (Object.keys(sentEvents).length > 1000) {
-        const keys = Object.keys(sentEvents);
-        keys.slice(0, 500).forEach(k => delete sentEvents[k]);
-        console.log('Cache de eventos limpiado');
-      }
-
-      // Buscar contacto: caché → API de Kommo
+      // Buscar contacto: mismo request → Redis por lead_id → API Kommo
       let contactData =
         contactByLeadId[String(lead.id)] ||
-        contactCache[`lead_${lead.id}`]  ||
-        contactCache[lead.linked_contacts_id
-          ? Object.keys(lead.linked_contacts_id)[0]
-          : null] ||
+        await getContact(`lead_${lead.id}`) ||
         null;
 
-      // Si no está en caché, consultar Kommo API
       if (!contactData || (!contactData.phone && !contactData.email)) {
-        console.log(`Contacto no encontrado en caché para lead ${lead.id}, consultando Kommo API...`);
+        console.log(`Contacto no encontrado en Redis para lead ${lead.id}, consultando Kommo API...`);
         const contactId = await getLeadFromKommo(lead.id);
         if (contactId) {
           contactData = await getContactFromKommo(contactId);
-          // Guardar en caché para futuros requests
-          contactCache[`lead_${lead.id}`] = contactData;
-          contactCache[contactId] = contactData;
+          await saveContact(`lead_${lead.id}`, contactData);
+          await saveContact(contactId, contactData);
         }
       }
 
-      const fbcData = contactCache[`lead_${lead.id}`] || {};
+      const fbcData = await getContact(`lead_${lead.id}`) || {};
 
       const leadData = {
         id:    lead.id,
