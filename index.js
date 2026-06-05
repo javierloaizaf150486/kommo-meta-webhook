@@ -110,6 +110,12 @@ async function sendToMetaCAPI(leadData, eventName) {
 
   if (leadData.fbc) userData.fbc = leadData.fbc;
 
+// Datos de ubicación fijos para Culiacán, Sinaloa
+userData.ct      = [hashData('culiacan')];
+userData.st      = [hashData('sinaloa')];
+userData.zp      = [hashData('80000')];
+userData.country = [hashData('mx')];
+
   if (Object.keys(userData).length === 0) {
     console.log(`Skipping ${eventName} — sin datos de usuario para lead ${leadData.id}`);
     return;
