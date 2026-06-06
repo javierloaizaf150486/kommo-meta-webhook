@@ -22,6 +22,7 @@ const stageToEvent = {
   '70153530': 'ViewContent',
   '70153006': 'Schedule',
   '27734908': 'Cancel',
+  '80101915': 'Purchase',  // ← Acudió a Cita
 };
 
 const hashData = (value) => {
