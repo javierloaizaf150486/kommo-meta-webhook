@@ -134,6 +134,10 @@ userData.country = [hashData('mx')];
         user_data: userData,
         custom_data: {
           lead_id: String(leadData.id),
+          ...(eventName === 'Purchase' && {
+            currency: 'MXN',
+            value: 0
+          })
         }
       }
     ]
