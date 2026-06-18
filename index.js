@@ -187,17 +187,31 @@ app.post('/webhook/kommo', async (req, res) => {
       console.log(`Contacto guardado en Redis: id=${contact.id} nombre=${contact.name} tel=${phone}`);
     }
 
-    // ── PASO 2: Guardar fbc desde unsorted ──────────────────────────
-    const unsortedLeads = body?.unsorted?.add || [];
-    for (const item of unsortedLeads) {
-      const ref = item?.data?.contacts?.[0]?.profiles?.waba?.profile_data?.ref;
-      if (ref && item.lead_id) {
-        const existing = await getContact(`lead_${item.lead_id}`) || {};
-        existing.fbc = ref;
-        await saveContact(`lead_${item.lead_id}`, existing);
-        console.log(`fbc guardado para lead ${item.lead_id}`);
-      }
-    }
+   // ── PASO 2: Guardar fbc desde unsorted ──────────────────────────
+const unsortedLeads = body?.unsorted?.add || [];
+for (const item of unsortedLeads) {
+  // Buscar ref en múltiples ubicaciones
+  const ref =
+    item?.data?.contacts?.[0]?.profiles?.waba?.profile_data?.ref ||
+    item?.source_data?.data?.[0]?.ref ||
+    item?.source_data?.client?.ref ||
+    null;
+
+  if (ref && item.lead_id) {
+    // Convertir ref a formato fbc válido de Meta
+    const fbc = ref.startsWith('fb.') ? ref : `fb.1.${Date.now()}.${ref}`;
+    const existing = await getContact(`lead_${item.lead_id}`) || {};
+    existing.fbc = fbc;
+    await saveContact(`lead_${item.lead_id}`, existing);
+    console.log(`fbc guardado para lead ${item.lead_id}: ${fbc}`);
+  }
+
+  // También buscar en source_data directo
+  const sourceRef = item?.source_data?.data?.[0];
+  if (sourceRef && item.lead_id) {
+    console.log(`source_data raw para lead ${item.lead_id}:`, JSON.stringify(item.source_data));
+  }
+}
 
     // ── PASO 3: Procesar leads ───────────────────────────────────────
     const newLeads    = body?.leads?.add    || [];
