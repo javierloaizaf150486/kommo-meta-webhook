@@ -109,7 +109,10 @@ async function sendToMetaCAPI(leadData, eventName) {
     if (parts[1]) userData.ln = [hashData(parts.slice(1).join(' '))];
   }
 
-  if (leadData.fbc) userData.fbc = leadData.fbc;
+ if (leadData.fbc) userData.fbc = leadData.fbc;
+
+// Identificador externo — usa el ID del lead de Kommo
+if (leadData.id) userData.extern_id = [hashData(String(leadData.id))];
 
 // Datos de ubicación fijos para Culiacán, Sinaloa
 userData.ct      = [hashData('culiacan')];
