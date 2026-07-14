@@ -173,10 +173,12 @@ app.post('/webhook/kommo', async (req, res) => {
       const phone = contact.custom_fields?.find(f => f.code === 'PHONE')
                       ?.values?.[0]?.value || '';
       const contactData = {
-        name:  contact.name || '',
-        phone: phone,
-        email: contact.email || '',
-      };
+  name:       contact.name || '',
+  first_name: contact.first_name || '',
+  last_name:  contact.last_name || '',
+  phone:      phone,
+  email:      contact.email || '',
+};
 
       await saveContact(contact.id, contactData);
 
