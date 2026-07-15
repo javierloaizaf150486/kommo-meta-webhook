@@ -211,12 +211,21 @@ for (const item of unsortedLeads) {
     null;
 
   if (ref && item.lead_id) {
-    // Convertir ref a formato fbc válido de Meta
-    const fbc = ref.startsWith('fb.') ? ref : `fb.1.${Date.now()}.${ref}`;
     const existing = await getContact(`lead_${item.lead_id}`) || {};
-    existing.fbc = fbc;
+
+    if (ref.startsWith('ad:')) {
+      // Formato de Click-to-WhatsApp: ad:{ad_id}:{ctwa_clid}
+      const ctwaClid = ref.split(':').slice(2).join(':');
+      existing.ctwa_clid = ctwaClid;
+      console.log(`ctwa_clid guardado para lead ${item.lead_id}: ${ctwaClid}`);
+    } else if (ref.startsWith('fb.')) {
+      existing.fbc = ref;
+      console.log(`fbc guardado para lead ${item.lead_id}: ${ref}`);
+    } else {
+      console.log(`ref con formato desconocido para lead ${item.lead_id}: ${ref}`);
+    }
+
     await saveContact(`lead_${item.lead_id}`, existing);
-    console.log(`fbc guardado para lead ${item.lead_id}: ${fbc}`);
   }
 
   // También buscar en source_data directo
