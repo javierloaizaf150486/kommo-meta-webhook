@@ -73,6 +73,9 @@ async function getContactFromKommo(contactId) {
       phone,
       email
     };
+  } catch (error) {
+    console.error(`Error consultando contacto ${contactId} en Kommo:`, error);
+    return {};
   }
 }
 
