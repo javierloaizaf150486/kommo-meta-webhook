@@ -279,6 +279,7 @@ for (const item of unsortedLeads) {
         phone:      contactData?.phone      || '',
         email:      contactData?.email      || '',
         fbc:        fbcData.fbc             || '',
+        ctwa_clid:  fbcData.ctwa_clid       || '',
       };
 
       console.log(`Enviando a Meta — evento=${eventName} lead=${lead.id} tel=${leadData.phone} nombre=${leadData.name}`);
