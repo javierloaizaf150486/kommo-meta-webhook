@@ -97,17 +97,22 @@ async function getLeadFromKommo(leadId) {
   }
 }
 
-async function if (leadData.first_name || leadData.last_name) {
-  if (leadData.first_name) userData.fn = [hashData(leadData.first_name)];
-  if (leadData.last_name)  userData.ln = [hashData(leadData.last_name)];
-} else if (leadData.name && leadData.name !== '…') {
-  const parts = leadData.name.trim().split(' ');
-  userData.fn = [hashData(parts[0])];
-  if (parts[1]) userData.ln = [hashData(parts.slice(1).join(' '))];
-}
+async function sendToMetaCAPI(leadData, eventName) {
+  const userData = {};
 
- if (leadData.fbc) userData.fbc = leadData.fbc;
+  if (leadData.phone) userData.ph = [hashData(leadData.phone)];
+  if (leadData.email) userData.em = [hashData(leadData.email)];
 
+  if (leadData.first_name || leadData.last_name) {
+    if (leadData.first_name) userData.fn = [hashData(leadData.first_name)];
+    if (leadData.last_name)  userData.ln = [hashData(leadData.last_name)];
+  } else if (leadData.name && leadData.name !== '…') {
+    const parts = leadData.name.trim().split(' ');
+    userData.fn = [hashData(parts[0])];
+    if (parts[1]) userData.ln = [hashData(parts.slice(1).join(' '))];
+  }
+
+  if (leadData.fbc) userData.fbc = leadData.fbc;
 // Identificador externo — usa el ID del lead de Kommo
 if (leadData.id) userData.extern_id = [hashData(String(leadData.id))];
 
