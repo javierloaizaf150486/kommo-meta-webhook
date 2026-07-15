@@ -66,10 +66,13 @@ async function getContactFromKommo(contactId) {
       ?.find(f => f.field_code === 'EMAIL')
       ?.values?.[0]?.value || '';
     console.log(`Contacto obtenido de Kommo API: id=${contactId} nombre=${data.name} tel=${phone}`);
-    return { name: data.name || '', phone, email };
-  } catch (error) {
-    console.error(`Error consultando contacto ${contactId} en Kommo:`, error);
-    return {};
+    return {
+      name: data.name || '',
+      first_name: data.first_name || '',
+      last_name: data.last_name || '',
+      phone,
+      email
+    };
   }
 }
 
