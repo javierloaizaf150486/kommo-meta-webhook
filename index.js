@@ -119,6 +119,7 @@ async function sendToMetaCAPI(leadData, eventName) {
   }
 
   if (leadData.fbc) userData.fbc = leadData.fbc;
+  if (leadData.ctwa_clid) userData.ctwa_clid = leadData.ctwa_clid;
 // Identificador externo — usa el ID del lead de Kommo
 if (leadData.id) userData.extern_id = [hashData(String(leadData.id))];
 
