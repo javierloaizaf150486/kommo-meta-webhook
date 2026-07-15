@@ -272,6 +272,10 @@ for (const item of unsortedLeads) {
         fbc:        fbcData.fbc             || '',
       };
 
+      console.log(`Enviando a Meta — evento=${eventName} lead=${lead.id} tel=${leadData.phone} nombre=${leadData.name}`);
+      await sendToMetaCAPI(leadData, eventName);
+    }
+
     res.sendStatus(200);
   } catch (error) {
     console.error('Error procesando webhook:', error);
