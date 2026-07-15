@@ -260,16 +260,14 @@ for (const item of unsortedLeads) {
       const fbcData = await getContact(`lead_${lead.id}`) || {};
 
       const leadData = {
-        id:    lead.id,
-        name:  contactData?.name  || '',
-        phone: contactData?.phone || '',
-        email: contactData?.email || '',
-        fbc:   fbcData.fbc        || '',
+        id:         lead.id,
+        name:       contactData?.name       || '',
+        first_name: contactData?.first_name || '',
+        last_name:  contactData?.last_name  || '',
+        phone:      contactData?.phone      || '',
+        email:      contactData?.email      || '',
+        fbc:        fbcData.fbc             || '',
       };
-
-      console.log(`Enviando a Meta — evento=${eventName} lead=${lead.id} tel=${leadData.phone} nombre=${leadData.name}`);
-      await sendToMetaCAPI(leadData, eventName);
-    }
 
     res.sendStatus(200);
   } catch (error) {
