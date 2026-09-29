@@ -278,14 +278,22 @@ for (const item of unsortedLeads) {
         null;
 
       if (!contactData || (!contactData.phone && !contactData.email)) {
-        console.log(`Contacto no encontrado en Redis para lead ${lead.id}, consultando Kommo API...`);
-        const contactId = await getLeadFromKommo(lead.id);
-        if (contactId) {
-          contactData = await getContactFromKommo(contactId);
-          await saveContact(`lead_${lead.id}`, contactData);
-          await saveContact(contactId, contactData);
-        }
-      }
+  console.log(`Contacto no encontrado en Redis para lead ${lead.id}, consultando Kommo API...`);
+  const result = await getLeadFromKommo(lead.id);
+  if (result) {
+    if (typeof result === 'object' && result.data) {
+      // Ya viene con datos del contacto con teléfono
+      contactData = result.data;
+      await saveContact(`lead_${lead.id}`, contactData);
+      await saveContact(result.id, contactData);
+    } else {
+      // Es solo un contactId
+      contactData = await getContactFromKommo(result);
+      await saveContact(`lead_${lead.id}`, contactData);
+      await saveContact(result, contactData);
+    }
+  }
+}
 
       const fbcData = await getContact(`lead_${lead.id}`) || {};
 
