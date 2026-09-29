@@ -91,12 +91,29 @@ async function getLeadFromKommo(leadId) {
       }
     );
     const data = await response.json();
-    const contactId =
-      data?._embedded?.contacts?.[0]?.id ||
-      data?.contacts?.[0]?.id ||
-      null;
-    console.log(`Lead obtenido de Kommo API: lead=${leadId} contact=${contactId}`);
-    return contactId;
+
+    // Obtener TODOS los contactos vinculados al lead
+    const contacts = data?._embedded?.contacts || [];
+    console.log(`Lead ${leadId} tiene ${contacts.length} contacto(s) vinculado(s)`);
+
+    if (contacts.length === 0) {
+      console.log(`Lead obtenido de Kommo API: lead=${leadId} contact=null`);
+      return null;
+    }
+
+    // Si hay más de uno, buscar el que tenga teléfono
+    if (contacts.length > 1) {
+      for (const contact of contacts) {
+        const contactDetail = await getContactFromKommo(contact.id);
+        if (contactDetail.phone) {
+          console.log(`Lead ${leadId}: usando contacto con teléfono id=${contact.id}`);
+          return { id: contact.id, data: contactDetail };
+        }
+      }
+    }
+
+    console.log(`Lead obtenido de Kommo API: lead=${leadId} contact=${contacts[0].id}`);
+    return contacts[0].id;
   } catch (error) {
     console.error(`Error consultando lead ${leadId} en Kommo:`, error);
     return null;
