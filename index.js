@@ -82,7 +82,7 @@ async function getContactFromKommo(contactId) {
 async function getLeadFromKommo(leadId) {
   try {
     const response = await fetch(
-      `https://${KOMMO_SUBDOMAIN}.amocrm.com/api/v4/leads/${leadId}?with=contacts`,
+  `https://${KOMMO_SUBDOMAIN}.amocrm.com/api/v4/leads/${leadId}?with=contacts,contact`,
       {
         headers: {
           'Authorization': `Bearer ${KOMMO_TOKEN}`,
@@ -91,6 +91,7 @@ async function getLeadFromKommo(leadId) {
       }
     );
     const data = await response.json();
+console.log(`Kommo API lead raw: ${JSON.stringify(data?._embedded)}`);
 
     // Obtener TODOS los contactos vinculados al lead
     const contacts = data?._embedded?.contacts || [];
