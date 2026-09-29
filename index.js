@@ -81,8 +81,9 @@ async function getContactFromKommo(contactId) {
 
 async function getLeadFromKommo(leadId) {
   try {
+    // Buscar contactos vinculados al lead directamente
     const response = await fetch(
-  `https://${KOMMO_SUBDOMAIN}.amocrm.com/api/v4/leads/${leadId}?with=contacts,contact`,
+      `https://${KOMMO_SUBDOMAIN}.amocrm.com/api/v4/contacts?query=${leadId}`,
       {
         headers: {
           'Authorization': `Bearer ${KOMMO_TOKEN}`,
@@ -91,36 +92,42 @@ async function getLeadFromKommo(leadId) {
       }
     );
     const data = await response.json();
-console.log(`Kommo API lead raw: ${JSON.stringify(data?._embedded)}`);
-
-    // Obtener TODOS los contactos vinculados al lead
     const contacts = data?._embedded?.contacts || [];
-    console.log(`Lead ${leadId} tiene ${contacts.length} contacto(s) vinculado(s)`);
+    console.log(`Contactos encontrados para lead ${leadId}: ${contacts.length}`);
 
     if (contacts.length === 0) {
-      console.log(`Lead obtenido de Kommo API: lead=${leadId} contact=null`);
-      return null;
+      // Intentar con el endpoint de leads
+      const leadResponse = await fetch(
+        `https://${KOMMO_SUBDOMAIN}.amocrm.com/api/v4/leads/${leadId}`,
+        {
+          headers: {
+            'Authorization': `Bearer ${KOMMO_TOKEN}`,
+            'Content-Type': 'application/json',
+          }
+        }
+      );
+      const leadData = await leadResponse.json();
+      console.log(`Lead raw: ${JSON.stringify(leadData?._embedded)}`);
+      const contactId = leadData?._embedded?.contacts?.[0]?.id || null;
+      console.log(`Lead obtenido de Kommo API: lead=${leadId} contact=${contactId}`);
+      return contactId;
     }
 
-    // Si hay más de uno, buscar el que tenga teléfono
-    if (contacts.length > 1) {
-      for (const contact of contacts) {
-        const contactDetail = await getContactFromKommo(contact.id);
-        if (contactDetail.phone) {
-          console.log(`Lead ${leadId}: usando contacto con teléfono id=${contact.id}`);
-          return { id: contact.id, data: contactDetail };
-        }
+    // Buscar el contacto con teléfono
+    for (const contact of contacts) {
+      const contactDetail = await getContactFromKommo(contact.id);
+      if (contactDetail.phone) {
+        console.log(`Contacto con teléfono encontrado: id=${contact.id} tel=${contactDetail.phone}`);
+        return { id: contact.id, data: contactDetail };
       }
     }
 
-    console.log(`Lead obtenido de Kommo API: lead=${leadId} contact=${contacts[0].id}`);
     return contacts[0].id;
   } catch (error) {
     console.error(`Error consultando lead ${leadId} en Kommo:`, error);
     return null;
   }
 }
-
 async function sendToMetaCAPI(leadData, eventName) {
   const userData = {};
 
