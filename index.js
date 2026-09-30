@@ -326,7 +326,13 @@ for (const item of unsortedLeads) {
     res.sendStatus(500);
   }
 });
-
+// Endpoint temporal para limpiar deduplicación
+app.delete('/webhook/dedupe/:leadId/:statusId', async (req, res) => {
+  const key = `event:${req.params.leadId}_${req.params.statusId}`;
+  await redis.del(key);
+  console.log(`Deduplicación limpiada: ${key}`);
+  res.send(`Clave ${key} eliminada ✅`);
+});
 app.get('/', (req, res) => {
   res.send('Servidor Kommo → Meta CAPI funcionando ✅');
 });
