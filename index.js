@@ -327,6 +327,18 @@ for (const item of unsortedLeads) {
   }
 });
 // Endpoint temporal para limpiar deduplicación
+// Endpoint para reenvío manual
+app.get('/webhook/reenviar/:leadId', async (req, res) => {
+  const { leadId } = req.params;
+  const { phone, name, email, event } = req.query;
+  const leadData = { id: leadId, phone, name, email, fbc: '', ctwa_clid: '' };
+  await sendToMetaCAPI(leadData, event || 'Purchase');
+  res.send(`Evento enviado para lead ${leadId} ✅`);
+});
+
+app.get('/', (req, res) => {
+  res.send('Servidor Kommo → Meta CAPI funcionando ✅');
+});
 app.get('/webhook/dedupe/:leadId/:statusId', async (req, res) => {
   const key = `event:${req.params.leadId}_${req.params.statusId}`;
   await redis.del(key);
