@@ -327,7 +327,7 @@ for (const item of unsortedLeads) {
   }
 });
 // Endpoint temporal para limpiar deduplicación
-app.delete('/webhook/dedupe/:leadId/:statusId', async (req, res) => {
+app.get('/webhook/dedupe/:leadId/:statusId', async (req, res) => {
   const key = `event:${req.params.leadId}_${req.params.statusId}`;
   await redis.del(key);
   console.log(`Deduplicación limpiada: ${key}`);
