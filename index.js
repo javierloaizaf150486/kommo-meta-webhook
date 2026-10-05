@@ -129,6 +129,9 @@ async function getLeadFromKommo(leadId) {
 
       console.log(`Lead raw: ${JSON.stringify(leadData?._embedded)}`);
       const contactId = leadData?._embedded?.contacts?.[0]?.id || null;
+      if (!contactId) {
+        console.warn(`Lead sin contacto vinculado en Kommo: lead=${leadId} — evento se enviará sin teléfono`);
+      }
       console.log(`Lead obtenido de Kommo API: lead=${leadId} contact=${contactId}`);
       return contactId;
     }
