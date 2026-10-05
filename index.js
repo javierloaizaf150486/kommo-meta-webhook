@@ -22,7 +22,8 @@ const stageToEvent = {
   '70153530': 'ViewContent',
   '70153006': 'Schedule',
   '27734908': 'Cancel',
-  '80101915': 'Purchase',  // ← Acudió a Cita
+  '80101915': 'Purchase',  // Acudió a Cita (EMI)
+  '70153611': 'Purchase',  // Acudió a Cita (Ángeles) ← FIX
 };
 
 const hashData = (value) => {
@@ -47,6 +48,21 @@ async function markEventSent(key) {
   await redis.set(`event:${key}`, '1', { EX: 60 * 60 * 24 * 7 }); // 7 días
 }
 
+// ── FIX: helper para parsear JSON de forma segura ────────────────────────────
+async function safeJson(response) {
+  const text = await response.text();
+  if (!text || text.trim() === '') {
+    console.warn(`Kommo API devolvió body vacío (status ${response.status})`);
+    return null;
+  }
+  try {
+    return JSON.parse(text);
+  } catch (e) {
+    console.warn(`Kommo API body no es JSON válido (status ${response.status}):`, text.slice(0, 200));
+    return null;
+  }
+}
+
 async function getContactFromKommo(contactId) {
   try {
     const response = await fetch(
@@ -58,7 +74,9 @@ async function getContactFromKommo(contactId) {
         }
       }
     );
-    const data = await response.json();
+    const data = await safeJson(response); // ← FIX
+    if (!data) return {};
+
     const phone = data.custom_fields_values
       ?.find(f => f.field_code === 'PHONE')
       ?.values?.[0]?.value || '';
@@ -91,7 +109,7 @@ async function getLeadFromKommo(leadId) {
         }
       }
     );
-    const data = await response.json();
+    const data = await safeJson(response); // ← FIX
     const contacts = data?._embedded?.contacts || [];
     console.log(`Contactos encontrados para lead ${leadId}: ${contacts.length}`);
 
@@ -106,7 +124,9 @@ async function getLeadFromKommo(leadId) {
           }
         }
       );
-      const leadData = await leadResponse.json();
+      const leadData = await safeJson(leadResponse); // ← FIX
+      if (!leadData) return null;
+
       console.log(`Lead raw: ${JSON.stringify(leadData?._embedded)}`);
       const contactId = leadData?._embedded?.contacts?.[0]?.id || null;
       console.log(`Lead obtenido de Kommo API: lead=${leadId} contact=${contactId}`);
@@ -128,6 +148,7 @@ async function getLeadFromKommo(leadId) {
     return null;
   }
 }
+
 async function sendToMetaCAPI(leadData, eventName) {
   const userData = {};
 
@@ -145,14 +166,15 @@ async function sendToMetaCAPI(leadData, eventName) {
 
   if (leadData.fbc) userData.fbc = leadData.fbc;
   if (leadData.ctwa_clid) userData.ctwa_clid = leadData.ctwa_clid;
-// Identificador externo — usa el ID del lead de Kommo
-if (leadData.id) userData.extern_id = [hashData(String(leadData.id))];
 
-// Datos de ubicación fijos para Culiacán, Sinaloa
-userData.ct      = [hashData('culiacan')];
-userData.st      = [hashData('sinaloa')];
-userData.zp      = [hashData('80000')];
-userData.country = [hashData('mx')];
+  // Identificador externo — usa el ID del lead de Kommo
+  if (leadData.id) userData.extern_id = [hashData(String(leadData.id))];
+
+  // Datos de ubicación fijos para Culiacán, Sinaloa
+  userData.ct      = [hashData('culiacan')];
+  userData.st      = [hashData('sinaloa')];
+  userData.zp      = [hashData('80000')];
+  userData.country = [hashData('mx')];
 
   if (Object.keys(userData).length === 0) {
     console.log(`Skipping ${eventName} — sin datos de usuario para lead ${leadData.id}`);
@@ -207,12 +229,12 @@ app.post('/webhook/kommo', async (req, res) => {
       const phone = contact.custom_fields?.find(f => f.code === 'PHONE')
                       ?.values?.[0]?.value || '';
       const contactData = {
-  name:       contact.name || '',
-  first_name: contact.first_name || '',
-  last_name:  contact.last_name || '',
-  phone:      phone,
-  email:      contact.email || '',
-};
+        name:       contact.name || '',
+        first_name: contact.first_name || '',
+        last_name:  contact.last_name || '',
+        phone:      phone,
+        email:      contact.email || '',
+      };
 
       await saveContact(contact.id, contactData);
 
@@ -226,40 +248,37 @@ app.post('/webhook/kommo', async (req, res) => {
       console.log(`Contacto guardado en Redis: id=${contact.id} nombre=${contact.name} tel=${phone}`);
     }
 
-   // ── PASO 2: Guardar fbc desde unsorted ──────────────────────────
-const unsortedLeads = body?.unsorted?.add || [];
-for (const item of unsortedLeads) {
-  // Buscar ref en múltiples ubicaciones
-  const ref =
-    item?.data?.contacts?.[0]?.profiles?.waba?.profile_data?.ref ||
-    item?.source_data?.data?.[0]?.ref ||
-    item?.source_data?.client?.ref ||
-    null;
+    // ── PASO 2: Guardar fbc desde unsorted ──────────────────────────
+    const unsortedLeads = body?.unsorted?.add || [];
+    for (const item of unsortedLeads) {
+      const ref =
+        item?.data?.contacts?.[0]?.profiles?.waba?.profile_data?.ref ||
+        item?.source_data?.data?.[0]?.ref ||
+        item?.source_data?.client?.ref ||
+        null;
 
-  if (ref && item.lead_id) {
-    const existing = await getContact(`lead_${item.lead_id}`) || {};
+      if (ref && item.lead_id) {
+        const existing = await getContact(`lead_${item.lead_id}`) || {};
 
-    if (ref.startsWith('ad:')) {
-      // Formato de Click-to-WhatsApp: ad:{ad_id}:{ctwa_clid}
-      const ctwaClid = ref.split(':').slice(2).join(':');
-      existing.ctwa_clid = ctwaClid;
-      console.log(`ctwa_clid guardado para lead ${item.lead_id}: ${ctwaClid}`);
-    } else if (ref.startsWith('fb.')) {
-      existing.fbc = ref;
-      console.log(`fbc guardado para lead ${item.lead_id}: ${ref}`);
-    } else {
-      console.log(`ref con formato desconocido para lead ${item.lead_id}: ${ref}`);
+        if (ref.startsWith('ad:')) {
+          const ctwaClid = ref.split(':').slice(2).join(':');
+          existing.ctwa_clid = ctwaClid;
+          console.log(`ctwa_clid guardado para lead ${item.lead_id}: ${ctwaClid}`);
+        } else if (ref.startsWith('fb.')) {
+          existing.fbc = ref;
+          console.log(`fbc guardado para lead ${item.lead_id}: ${ref}`);
+        } else {
+          console.log(`ref con formato desconocido para lead ${item.lead_id}: ${ref}`);
+        }
+
+        await saveContact(`lead_${item.lead_id}`, existing);
+      }
+
+      const sourceRef = item?.source_data?.data?.[0];
+      if (sourceRef && item.lead_id) {
+        console.log(`source_data raw para lead ${item.lead_id}:`, JSON.stringify(item.source_data));
+      }
     }
-
-    await saveContact(`lead_${item.lead_id}`, existing);
-  }
-
-  // También buscar en source_data directo
-  const sourceRef = item?.source_data?.data?.[0];
-  if (sourceRef && item.lead_id) {
-    console.log(`source_data raw para lead ${item.lead_id}:`, JSON.stringify(item.source_data));
-  }
-}
 
     // ── PASO 3: Procesar leads ───────────────────────────────────────
     const newLeads    = body?.leads?.add    || [];
@@ -286,22 +305,20 @@ for (const item of unsortedLeads) {
         null;
 
       if (!contactData || (!contactData.phone && !contactData.email)) {
-  console.log(`Contacto no encontrado en Redis para lead ${lead.id}, consultando Kommo API...`);
-  const result = await getLeadFromKommo(lead.id);
-  if (result) {
-    if (typeof result === 'object' && result.data) {
-      // Ya viene con datos del contacto con teléfono
-      contactData = result.data;
-      await saveContact(`lead_${lead.id}`, contactData);
-      await saveContact(result.id, contactData);
-    } else {
-      // Es solo un contactId
-      contactData = await getContactFromKommo(result);
-      await saveContact(`lead_${lead.id}`, contactData);
-      await saveContact(result, contactData);
-    }
-  }
-}
+        console.log(`Contacto no encontrado en Redis para lead ${lead.id}, consultando Kommo API...`);
+        const result = await getLeadFromKommo(lead.id);
+        if (result) {
+          if (typeof result === 'object' && result.data) {
+            contactData = result.data;
+            await saveContact(`lead_${lead.id}`, contactData);
+            await saveContact(result.id, contactData);
+          } else {
+            contactData = await getContactFromKommo(result);
+            await saveContact(`lead_${lead.id}`, contactData);
+            await saveContact(result, contactData);
+          }
+        }
+      }
 
       const fbcData = await getContact(`lead_${lead.id}`) || {};
 
@@ -326,7 +343,7 @@ for (const item of unsortedLeads) {
     res.sendStatus(500);
   }
 });
-// Endpoint temporal para limpiar deduplicación
+
 // Endpoint para reenvío manual
 app.get('/webhook/reenviar/:leadId', async (req, res) => {
   const { leadId } = req.params;
@@ -336,15 +353,13 @@ app.get('/webhook/reenviar/:leadId', async (req, res) => {
   res.send(`Evento enviado para lead ${leadId} ✅`);
 });
 
-app.get('/', (req, res) => {
-  res.send('Servidor Kommo → Meta CAPI funcionando ✅');
-});
 app.get('/webhook/dedupe/:leadId/:statusId', async (req, res) => {
   const key = `event:${req.params.leadId}_${req.params.statusId}`;
   await redis.del(key);
   console.log(`Deduplicación limpiada: ${key}`);
   res.send(`Clave ${key} eliminada ✅`);
 });
+
 app.get('/', (req, res) => {
   res.send('Servidor Kommo → Meta CAPI funcionando ✅');
 });
