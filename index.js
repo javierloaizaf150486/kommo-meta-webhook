@@ -116,7 +116,7 @@ async function getLeadFromKommo(leadId) {
     if (contacts.length === 0) {
       // Intentar con el endpoint de leads
       const leadResponse = await fetch(
-        `https://${KOMMO_SUBDOMAIN}.amocrm.com/api/v4/leads/${leadId}`,
+        `https://${KOMMO_SUBDOMAIN}.amocrm.com/api/v4/leads/${leadId}?with=contacts`,
         {
           headers: {
             'Authorization': `Bearer ${KOMMO_TOKEN}`,
@@ -307,7 +307,7 @@ app.post('/webhook/kommo', async (req, res) => {
         await getContact(`lead_${lead.id}`) ||
         null;
 
-     if (!contactData || !contactData.phone || !contactData.email) {
+      if (!contactData || (!contactData.phone && !contactData.email)) {
         console.log(`Contacto no encontrado en Redis para lead ${lead.id}, consultando Kommo API...`);
         const result = await getLeadFromKommo(lead.id);
         if (result) {
@@ -336,7 +336,7 @@ app.post('/webhook/kommo', async (req, res) => {
         ctwa_clid:  fbcData.ctwa_clid       || '',
       };
 
-      console.log(`Enviando a Meta — evento=${eventName} lead=${lead.id} tel=${leadData.phone} email=${leadData.email} nombre=${leadData.name}`);
+      console.log(`Enviando a Meta — evento=${eventName} lead=${lead.id} tel=${leadData.phone} nombre=${leadData.name}`);
       await sendToMetaCAPI(leadData, eventName);
     }
 
