@@ -22,14 +22,46 @@ const stageToEvent = {
   '70153530': 'ViewContent',
   '70153006': 'Schedule',
   '27734908': 'Cancel',
-  '80101915': 'Purchase',  // Acudió a Cita (EMI)
-  '70153611': 'Purchase',  // Acudió a Cita (Ángeles) ← FIX
+  '80101915': 'Purchase',  // "acudio a cita" (EMBUDO EMI)
+  '70153611': 'Schedule',  // "Agenda" (EMBUDO EMI) — el SalesBot mueve aquí al agendar; NO es asistencia
 };
+
+// EMBUDO ANGELES (pipeline 14560655). Sus etapas se mapean por embudo porque "ACUDIO CITA"
+// es la etapa de ganado de Kommo (status 142), cuyo ID es el mismo en todos los embudos.
+const stageToEventByPipeline = {
+  '14560655': {
+    '112489747': 'Schedule',  // AGENDO
+    '142':       'Purchase',  // ACUDIO CITA
+  },
+};
+// Ref. (sin mapear a propósito): 112489363 Incoming leads, 112489367 Contacto inicial,
+// 112489371 Validación, 112489375 Información, 143 NO AGENDAR.
 
 const hashData = (value) => {
   if (!value) return null;
   return crypto.createHash('sha256').update(value.toLowerCase().trim()).digest('hex');
 };
+
+// Meta pide el teléfono solo con dígitos y código de país (sin "+"), antes de hashear.
+// Kommo/WhatsApp entrega números como +521667XXXXXXX (formato móvil viejo de México);
+// el formato actual es 52667XXXXXXX. Se mandan ambas variantes para no depender de cuál
+// tenga guardada Meta; si el número ya viene en un solo formato, se manda solo ese.
+function phoneHashes(raw) {
+  const digits = String(raw || '').replace(/\D/g, '');
+  if (!digits) return [];
+  const variants = new Set();
+  let ten = null;
+  if (digits.length === 10) ten = digits;
+  else if (digits.length === 12 && digits.startsWith('52')) ten = digits.slice(2);
+  else if (digits.length === 13 && digits.startsWith('521')) ten = digits.slice(3);
+  if (ten) {
+    variants.add('52' + ten);
+    variants.add('521' + ten);
+  } else {
+    variants.add(digits); // número extranjero u otro formato: se manda tal cual, solo dígitos
+  }
+  return [...variants].map((v) => crypto.createHash('sha256').update(v).digest('hex'));
+}
 
 async function saveContact(key, data) {
   await redis.set(`contact:${key}`, JSON.stringify(data), { EX: 60 * 60 * 24 }); // 24 horas
@@ -155,7 +187,8 @@ async function getLeadFromKommo(leadId) {
 async function sendToMetaCAPI(leadData, eventName) {
   const userData = {};
 
-  if (leadData.phone) userData.ph = [hashData(leadData.phone)];
+  const phoneHashList = phoneHashes(leadData.phone);
+  if (phoneHashList.length) userData.ph = phoneHashList;
   if (leadData.email) userData.em = [hashData(leadData.email)];
 
   if (leadData.first_name || leadData.last_name) {
@@ -290,7 +323,9 @@ app.post('/webhook/kommo', async (req, res) => {
 
     for (const lead of allLeads) {
       const statusId  = String(lead.status_id);
-      const eventName = stageToEvent[statusId];
+      const eventName =
+        stageToEventByPipeline[String(lead.pipeline_id)]?.[statusId] ||
+        stageToEvent[statusId];
       if (!eventName) continue;
 
       // Deduplicación con Redis
