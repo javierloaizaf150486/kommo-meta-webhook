@@ -26,6 +26,17 @@ const stageToEvent = {
   '70153611': 'Schedule',  // "Agenda" (EMBUDO EMI) — el SalesBot mueve aquí al agendar; NO es asistencia
 };
 
+// EMBUDO ANGELES (pipeline 14560655). Sus etapas se mapean por embudo porque "ACUDIO CITA"
+// es la etapa de ganado de Kommo (status 142), cuyo ID es el mismo en todos los embudos.
+const stageToEventByPipeline = {
+  '14560655': {
+    '112489747': 'Schedule',  // AGENDO
+    '142':       'Purchase',  // ACUDIO CITA
+  },
+};
+// Ref. (sin mapear a propósito): 112489363 Incoming leads, 112489367 Contacto inicial,
+// 112489371 Validación, 112489375 Información, 143 NO AGENDAR.
+
 const hashData = (value) => {
   if (!value) return null;
   return crypto.createHash('sha256').update(value.toLowerCase().trim()).digest('hex');
@@ -312,7 +323,9 @@ app.post('/webhook/kommo', async (req, res) => {
 
     for (const lead of allLeads) {
       const statusId  = String(lead.status_id);
-      const eventName = stageToEvent[statusId];
+      const eventName =
+        stageToEventByPipeline[String(lead.pipeline_id)]?.[statusId] ||
+        stageToEvent[statusId];
       if (!eventName) continue;
 
       // Deduplicación con Redis
