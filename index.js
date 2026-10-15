@@ -10,6 +10,12 @@ const ACCESS_TOKEN = process.env.ACCESS_TOKEN;
 const KOMMO_TOKEN = process.env.KOMMO_TOKEN;
 const KOMMO_SUBDOMAIN = 'loaizafjavier';
 
+// Ventana en la que la MISMA persona (mismo teléfono) cuenta una sola vez por evento,
+// aunque Kommo tenga varios leads (p. ej. escribió desde dos campañas).
+const PERSON_DEDUPE_DAYS = Number(process.env.PERSON_DEDUPE_DAYS || 7);
+// Cuánto tiempo se conservan en Redis los datos del contacto (incluye ctwa_clid y ref del anuncio).
+const CONTACT_TTL_DAYS = Number(process.env.CONTACT_TTL_DAYS || 30);
+
 // Conectar Redis
 const redis = createClient({ url: process.env.REDIS_URL });
 redis.on('error', (err) => console.error('Redis error:', err));
@@ -64,7 +70,7 @@ function phoneHashes(raw) {
 }
 
 async function saveContact(key, data) {
-  await redis.set(`contact:${key}`, JSON.stringify(data), { EX: 60 * 60 * 24 }); // 24 horas
+  await redis.set(`contact:${key}`, JSON.stringify(data), { EX: 60 * 60 * 24 * CONTACT_TTL_DAYS });
 }
 
 async function getContact(key) {
@@ -72,12 +78,48 @@ async function getContact(key) {
   return data ? JSON.parse(data) : null;
 }
 
-async function isEventSent(key) {
-  return await redis.exists(`event:${key}`);
+// Reclama la clave de forma atómica (SET NX): devuelve true solo para el primero que llega,
+// así dos entregas simultáneas del mismo webhook no envían el evento dos veces.
+async function claimEvent(key, ttlSeconds) {
+  const res = await redis.set(`event:${key}`, '1', { NX: true, EX: ttlSeconds });
+  return res === 'OK';
 }
 
-async function markEventSent(key) {
-  await redis.set(`event:${key}`, '1', { EX: 60 * 60 * 24 * 7 }); // 7 días
+// Libera la clave si el envío a Meta falló, para que el reintento de Kommo sí pase.
+async function releaseEvent(key) {
+  await redis.del(`event:${key}`);
+}
+
+// Teléfono mexicano normalizado a 10 dígitos (acepta +521..., 52..., o 10 dígitos).
+// Otros formatos se devuelven solo con dígitos. Menos de 10 dígitos se descarta.
+function normalizePhone(raw) {
+  const digits = String(raw || '').replace(/\D/g, '');
+  if (digits.length < 10) return null;
+  if (digits.length === 10) return digits;
+  if (digits.length === 12 && digits.startsWith('52')) return digits.slice(2);
+  if (digits.length === 13 && digits.startsWith('521')) return digits.slice(3);
+  return digits;
+}
+
+// Registra por persona qué leads y qué referencias de anuncio la han traído.
+// Si una misma persona aparece con 2+ leads o 2+ anuncios, lo deja en el log (teléfono enmascarado).
+async function recordTouch(phone10, leadId, ref) {
+  try {
+    const base = `person:${phone10}`;
+    const ttl = 60 * 60 * 24 * 90; // 90 días
+    const leadAdded = await redis.sAdd(`${base}:leads`, String(leadId));
+    const refAdded = ref ? await redis.sAdd(`${base}:refs`, ref) : 0;
+    await redis.expire(`${base}:leads`, ttl);
+    if (ref) await redis.expire(`${base}:refs`, ttl);
+    if (!leadAdded && !refAdded) return;
+    const leads = await redis.sCard(`${base}:leads`);
+    const refs = ref ? await redis.sCard(`${base}:refs`) : 0;
+    if (leads > 1 || refs > 1) {
+      console.log(`TRASLAPE persona ***${phone10.slice(-4)} leads=${leads} refs=${refs} (nuevo lead=${leadId})`);
+    }
+  } catch (err) {
+    console.error('No se pudo registrar el toque de la persona:', err);
+  }
 }
 
 // ── FIX: helper para parsear JSON de forma segura ────────────────────────────
@@ -249,6 +291,9 @@ async function sendToMetaCAPI(leadData, eventName) {
 
   const result = await response.json();
   console.log(`Meta CAPI response for ${eventName}:`, JSON.stringify(result));
+  if (!response.ok || result.error) {
+    throw new Error(`Meta CAPI rechazó ${eventName}: ${JSON.stringify(result.error || result)}`);
+  }
   return result;
 }
 
@@ -295,6 +340,7 @@ app.post('/webhook/kommo', async (req, res) => {
 
       if (ref && item.lead_id) {
         const existing = await getContact(`lead_${item.lead_id}`) || {};
+        existing.ref = ref; // referencia cruda del anuncio, para medir traslape entre campañas
 
         if (ref.startsWith('ad:')) {
           const ctwaClid = ref.split(':').slice(2).join(':');
@@ -328,13 +374,12 @@ app.post('/webhook/kommo', async (req, res) => {
         stageToEvent[statusId];
       if (!eventName) continue;
 
-      // Deduplicación con Redis
-      const dedupeKey = `${lead.id}_${statusId}`;
-      if (await isEventSent(dedupeKey)) {
+      // Deduplicación por lead + etapa (atómica): ignora reentregas del mismo webhook
+      const leadKey = `${lead.id}_${statusId}`;
+      if (!(await claimEvent(leadKey, 60 * 60 * 24 * 7))) {
         console.log(`Duplicado ignorado — lead=${lead.id} evento=${eventName}`);
         continue;
       }
-      await markEventSent(dedupeKey);
 
       // Buscar contacto: mismo request → Redis por lead_id → API Kommo
       let contactData =
@@ -371,8 +416,29 @@ app.post('/webhook/kommo', async (req, res) => {
         ctwa_clid:  fbcData.ctwa_clid       || '',
       };
 
-      console.log(`Enviando a Meta — evento=${eventName} lead=${lead.id} tel=${leadData.phone} email=${leadData.email} nombre=${leadData.name}`);
-      await sendToMetaCAPI(leadData, eventName);
+      let personKey = null;
+      try {
+        // Deduplicación por persona: si el mismo teléfono ya generó este evento en la ventana
+        // (otro lead, otra campaña), no se vuelve a contar en Meta.
+        const phone10 = normalizePhone(leadData.phone);
+        if (phone10) {
+          await recordTouch(phone10, lead.id, fbcData.ref || fbcData.ctwa_clid || fbcData.fbc || '');
+          const key = `p_${phone10}_${eventName}`;
+          if (!(await claimEvent(key, 60 * 60 * 24 * PERSON_DEDUPE_DAYS))) {
+            console.log(`Duplicado por persona ignorado — lead=${lead.id} evento=${eventName} persona=***${phone10.slice(-4)}`);
+            continue;
+          }
+          personKey = key;
+        }
+
+        console.log(`Enviando a Meta — evento=${eventName} lead=${lead.id} tel=${leadData.phone} email=${leadData.email} nombre=${leadData.name}`);
+        await sendToMetaCAPI(leadData, eventName);
+      } catch (err) {
+        // Si Meta falló, se liberan las claves para que el reintento de Kommo no se descarte.
+        await releaseEvent(leadKey);
+        if (personKey) await releaseEvent(personKey);
+        throw err;
+      }
     }
 
     res.sendStatus(200);
@@ -387,8 +453,13 @@ app.get('/webhook/reenviar/:leadId', async (req, res) => {
   const { leadId } = req.params;
   const { phone, name, email, event } = req.query;
   const leadData = { id: leadId, phone, name, email, fbc: '', ctwa_clid: '' };
-  await sendToMetaCAPI(leadData, event || 'Purchase');
-  res.send(`Evento enviado para lead ${leadId} ✅`);
+  try {
+    await sendToMetaCAPI(leadData, event || 'Purchase');
+    res.send(`Evento enviado para lead ${leadId} ✅`);
+  } catch (err) {
+    console.error('Error en reenvío manual:', err);
+    res.status(502).send(`Meta rechazó el evento para lead ${leadId} ❌`);
+  }
 });
 
 app.get('/webhook/dedupe/:leadId/:statusId', async (req, res) => {
